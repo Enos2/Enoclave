@@ -1,4 +1,4 @@
-# File: .gitignore
+v# File: .gitignore
 # Purpose: Keep secrets, dependencies and build output out of Git.
 node_modules/
 .env
