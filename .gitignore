@@ -9,3 +9,5 @@ dist/
 .DS_Store
 # File: .gitignore
 # End of file
+# Encrypted uploads (runtime data)
+server/storage/
