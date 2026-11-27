@@ -1,102 +1,99 @@
-// File: server/src/socket/index.js
-// Purpose: Authenticated realtime messaging over Socket.IO with origin check, validation, rate limiting and block enforcement.
-import { Server } from 'socket.io';
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/routes/users.js
+// Purpose : HTTP endpoints under /api/users for the logged-in user: username
+//           search (hides users who blocked you), public-key lookup, key
+//           rotation and account deletion. Rotation and deletion both need the
+//           account password (re-checked with bcrypt) and are rate-limited on
+//           failed attempts. Rotation writes an audit-log entry and tells every
+//           affected group, over realtime, that a new group key is needed.
+//           Deletion removes the user from all groups before deleting the
+//           account and tells the remaining members.
+// =============================================================================
+import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { env } from '../config/env.js';
-import { authenticateToken } from '../middleware/auth.js';
-import { COOKIE_NAME } from '../utils/token.js';
-import { userExists } from '../models/User.js';
-import { createMessage } from '../models/Message.js';
-import { getBlockState } from '../models/Block.js';
-import { isUuid, serializeMessage } from '../utils/serialize.js';
+import {
+  findUserById,
+  getPasswordHash,
+  searchUsers,
+  updatePublicKey,
+  deleteUser,
+} from '../models/User.js';
+import { logEvent } from '../models/AuthEvent.js';
+import { requireAuth } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
+import { strictLimiter, searchLimiter } from '../middleware/security.js';
+import { publicKeySchema } from '../utils/schemas.js';
+import { isUuid, publicUser } from '../utils/serialize.js';
+import { clientInfo } from '../utils/device.js';
+import { clearAuthCookie } from '../utils/token.js';
+import { notifyGroup } from '../utils/realtime.js';
 
-const base64 = /^[A-Za-z0-9+/=]+$/;
-const sendSchema = z
-  .object({
-    to: z.string().refine(isUuid),
-    ciphertext: z.string().min(1).max(20000).regex(base64),
-    iv: z.string().min(16).max(32).regex(base64),
-    ttlSeconds: z.number().int().min(5).max(604800).optional(),
-  })
+const router = Router();
+router.use(requireAuth);
+
+const rotateSchema = z
+  .object({ publicKey: publicKeySchema, password: z.string().min(1).max(72) })
   .strict();
+const deleteSchema = z.object({ password: z.string().min(1).max(72) }).strict();
 
-// Minimal cookie parser: no external dependency, no prototype pollution, first value wins.
-function parseCookies(header = '') {
-  const out = Object.create(null);
-  if (typeof header !== 'string' || header.length > 4096) return out;
-  for (const part of header.split(';')) {
-    const i = part.indexOf('=');
-    if (i < 1) continue;
-    const name = part.slice(0, i).trim();
-    let value = part.slice(i + 1).trim();
-    if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
-    try {
-      value = decodeURIComponent(value);
-    } catch {
-      /* keep the raw value if it is not valid percent-encoding */
-    }
-    if (!(name in out)) out[name] = value;
+router.get('/search', searchLimiter, async (req, res, next) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
+    if (!/^[a-z0-9_]{2,24}$/.test(q)) return res.json({ users: [] });
+    const found = await searchUsers(q, req.user.id);
+    res.json({ users: found.map((u) => ({ id: u.id, username: u.username })) });
+  } catch (err) {
+    next(err);
   }
-  return out;
-}
+});
 
-function allowed(socket) {
-  const now = Date.now();
-  const win = (socket.data.window ??= []);
-  while (win.length && now - win[0] > 10_000) win.shift();
-  if (win.length >= 30) return false;
-  win.push(now);
-  return true;
-}
+// A key change is security-relevant: it is audited and every group of the user is flagged for rekey.
+router.put('/me/key', strictLimiter, validate(rotateSchema), async (req, res, next) => {
+  try {
+    const hash = await getPasswordHash(req.user.id);
+    const ok = hash && (await bcrypt.compare(req.body.password, hash));
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+    const { user, groupIds } = await updatePublicKey(req.user.id, req.body.publicKey);
+    await logEvent({ userId: req.user.id, username: req.user.username, event: 'key_rotated', ...clientInfo(req) });
+    const io = req.app.get('io');
+    for (const groupId of groupIds) await notifyGroup(io, groupId, 'rekey_needed');
+    res.json({ user: publicUser(user) });
+  } catch (err) {
+    next(err);
+  }
+});
 
-export function initSocket(httpServer) {
-  const io = new Server(httpServer, {
-    cors: { origin: env.clientOrigin, credentials: true },
-    maxHttpBufferSize: 100_000,
-  });
+// Permanently deletes the account; messages, sessions, contacts, blocks and events cascade.
+router.delete('/me', strictLimiter, validate(deleteSchema), async (req, res, next) => {
+  try {
+    const hash = await getPasswordHash(req.user.id);
+    const ok = hash && (await bcrypt.compare(req.body.password, hash));
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+    const affected = await deleteUser(req.user.id);
+    const io = req.app.get('io');
+    io?.in(`user:${req.user.id}`).disconnectSockets(true);
+    for (const g of affected) if (!g.deleted) await notifyGroup(io, g.groupId, 'member_left');
+    clearAuthCookie(res);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
-  io.use(async (socket, next) => {
-    if (socket.handshake.headers.origin !== env.clientOrigin) return next(new Error('forbidden'));
-    const cookies = parseCookies(socket.handshake.headers.cookie);
-    const user = await authenticateToken(cookies[COOKIE_NAME]);
-    if (!user) return next(new Error('unauthorized'));
-    socket.data.user = user;
-    next();
-  });
+router.get('/:id/key', async (req, res, next) => {
+  try {
+    if (!isUuid(req.params.id)) return res.status(400).json({ error: 'Invalid input' });
+    const user = await findUserById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'Not found' });
+    res.json({ user: publicUser(user) });
+  } catch (err) {
+    next(err);
+  }
+});
 
-  io.on('connection', (socket) => {
-    const me = socket.data.user.id;
-    socket.join(`user:${me}`);
-    socket.join(`session:${socket.data.user.session_id}`); // lets a single session be disconnected on revoke
+export default router;
 
-    socket.on('message:send', async (payload, ack) => {
-      const reply = typeof ack === 'function' ? ack : () => {};
-      try {
-        if (!allowed(socket)) return reply({ ok: false, error: 'Slow down' });
-        const parsed = sendSchema.safeParse(payload);
-        if (!parsed.success) return reply({ ok: false, error: 'Invalid message' });
-        const { to, ciphertext, iv, ttlSeconds } = parsed.data;
-        if (to === me) return reply({ ok: false, error: 'Invalid recipient' });
-        if (!(await userExists(to))) return reply({ ok: false, error: 'Invalid recipient' });
-
-        const { iBlocked, blockedMe } = await getBlockState(me, to);
-        if (iBlocked) return reply({ ok: false, error: 'You blocked this user. Unblock them to send messages.' });
-        // The recipient blocked the sender: report success but store and deliver nothing,
-        // so a blocked user cannot tell they are blocked.
-        if (blockedMe) return reply({ ok: true });
-
-        const msg = await createMessage({ from: me, to, ciphertext, iv, ttlSeconds });
-        io.to(`user:${me}`).to(`user:${to}`).emit('message:new', serializeMessage(msg));
-        reply({ ok: true });
-      } catch (err) {
-        console.error('[socket] send failed:', err.message);
-        reply({ ok: false, error: 'Server error' });
-      }
-    });
-  });
-
-  return io;
-}
-
-// File: server/src/socket/index.js
+// File: server/src/routes/users.js
 // End of file

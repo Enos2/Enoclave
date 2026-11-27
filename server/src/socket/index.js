@@ -1,23 +1,28 @@
-// File: server/src/socket/index.js
-// Purpose: Authenticated realtime messaging over Socket.IO with origin check, validation and per-socket rate limiting.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/socket/index.js
+// Purpose : The realtime core (Socket.IO). A connection is accepted only if its
+//           Origin matches the configured client AND its httpOnly cookie holds
+//           a valid, non-revoked session. Each socket joins a per-user room
+//           (shared by all of that user's devices) and a per-session room (so
+//           one device can be disconnected when its session is revoked).
+//           It also owns the per-socket rate limiter (30 events per 10
+//           seconds), shared by every handler.
+//           Features do NOT live here. Every file in ./handlers is loaded
+//           automatically at startup and must export a default function
+//           register({ io, socket, allowed }) that attaches its own events.
+//           To add a realtime feature, add a file to ./handlers - this file
+//           never needs editing again.
+// =============================================================================
+import { readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server } from 'socket.io';
-import { z } from 'zod';
 import { env } from '../config/env.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { COOKIE_NAME } from '../utils/token.js';
-import { userExists } from '../models/User.js';
-import { createMessage } from '../models/Message.js';
-import { isUuid, serializeMessage } from '../utils/serialize.js';
 
-const base64 = /^[A-Za-z0-9+/=]+$/;
-const sendSchema = z
-  .object({
-    to: z.string().refine(isUuid),
-    ciphertext: z.string().min(1).max(20000).regex(base64),
-    iv: z.string().min(16).max(32).regex(base64),
-    ttlSeconds: z.number().int().min(5).max(604800).optional(),
-  })
-  .strict();
+const HANDLERS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'handlers');
 
 // Minimal cookie parser: no external dependency, no prototype pollution, first value wins.
 function parseCookies(header = '') {
@@ -39,6 +44,7 @@ function parseCookies(header = '') {
   return out;
 }
 
+// Sliding-window limiter: at most 30 events per socket in any 10 seconds.
 function allowed(socket) {
   const now = Date.now();
   const win = (socket.data.window ??= []);
@@ -48,11 +54,20 @@ function allowed(socket) {
   return true;
 }
 
-export function initSocket(httpServer) {
+export async function initSocket(httpServer) {
   const io = new Server(httpServer, {
     cors: { origin: env.clientOrigin, credentials: true },
     maxHttpBufferSize: 100_000,
   });
+
+  const handlers = [];
+  const files = readdirSync(HANDLERS_DIR)
+    .filter((f) => /^[a-zA-Z0-9_-]+\.js$/.test(f))
+    .sort();
+  for (const file of files) {
+    const mod = await import(pathToFileURL(path.join(HANDLERS_DIR, file)).href);
+    if (typeof mod.default === 'function') handlers.push(mod.default);
+  }
 
   io.use(async (socket, next) => {
     if (socket.handshake.headers.origin !== env.clientOrigin) return next(new Error('forbidden'));
@@ -64,29 +79,12 @@ export function initSocket(httpServer) {
   });
 
   io.on('connection', (socket) => {
-    const me = socket.data.user.id;
-    socket.join(`user:${me}`);
-
-    socket.on('message:send', async (payload, ack) => {
-      const reply = typeof ack === 'function' ? ack : () => {};
-      try {
-        if (!allowed(socket)) return reply({ ok: false, error: 'Slow down' });
-        const parsed = sendSchema.safeParse(payload);
-        if (!parsed.success) return reply({ ok: false, error: 'Invalid message' });
-        const { to, ciphertext, iv, ttlSeconds } = parsed.data;
-        if (to === me) return reply({ ok: false, error: 'Invalid recipient' });
-        if (!(await userExists(to))) return reply({ ok: false, error: 'Invalid recipient' });
-
-        const msg = await createMessage({ from: me, to, ciphertext, iv, ttlSeconds });
-        io.to(`user:${me}`).to(`user:${to}`).emit('message:new', serializeMessage(msg));
-        reply({ ok: true });
-      } catch (err) {
-        console.error('[socket] send failed:', err.message);
-        reply({ ok: false, error: 'Server error' });
-      }
-    });
+    socket.join(`user:${socket.data.user.id}`);
+    socket.join(`session:${socket.data.user.session_id}`);
+    for (const register of handlers) register({ io, socket, allowed });
   });
 
+  console.log(`[socket] ${handlers.length} handler modules loaded`);
   return io;
 }
 

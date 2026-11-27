@@ -1,5 +1,16 @@
-// File: server/src/config/db.js
-// Purpose: PostgreSQL (Neon) connection pool, query helper, transaction helper and background cleanup sweeper.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/config/db.js
+// Purpose : Owns the single PostgreSQL (Neon) connection pool used by the whole
+//           server. Exposes query() for one-off statements and
+//           withTransaction() for multi-statement operations that must
+//           succeed or fail together (group changes, account deletion).
+//           Also runs the background sweeper, once a minute: it deletes
+//           expired disappearing messages (direct and group), dead and
+//           revoked login sessions, and audit-log rows older than 90 days.
+//           The pool error handler is required: Neon drops idle connections,
+//           and an unhandled pool error would otherwise crash the process.
+// =============================================================================
 import pg from 'pg';
 import { env } from './env.js';
 
@@ -12,7 +23,6 @@ export const pool = new Pool({
   connectionTimeoutMillis: 15_000, // Neon may need a few seconds to wake a suspended compute
 });
 
-// Neon closes idle connections; without this handler a dropped idle client would crash the process.
 pool.on('error', (err) => console.error('[db] idle client error:', err.message));
 
 export const query = (text, params) => pool.query(text, params);
@@ -41,11 +51,11 @@ export async function connectDB() {
   console.log('[db] connected');
 }
 
-// Runs every minute: removes expired disappearing messages, dead sessions and audit events older than 90 days.
 export function startExpirySweeper() {
   const run = async () => {
     try {
       await pool.query('DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at <= now()');
+      await pool.query('DELETE FROM group_messages WHERE expires_at IS NOT NULL AND expires_at <= now()');
       await pool.query(
         `DELETE FROM sessions
          WHERE expires_at < now() - interval '1 day'
