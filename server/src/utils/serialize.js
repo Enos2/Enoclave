@@ -5,8 +5,10 @@
 //           events return, so internal column names (snake_case) and secrets
 //           such as password hashes can never leak into a response. Covers the
 //           public user shape, direct messages and group messages, including
-//           the burn-on-read setting (burnAfterReadSeconds) and expiry time
-//           (expiresAt, which is null until a timer starts). Also provides the
+//           the burn-on-read setting (burnAfterReadSeconds), the expiry time
+//           (expiresAt, null until a timer starts) and the time of the last
+//           edit (editedAt, null if the message was never edited). Fields a
+//           query did not select simply come out as null. Also provides the
 //           UUID check used on every route parameter and socket payload: an
 //           id that fails it never reaches a SQL query. This file is final;
 //           later features add their own serializers next to their models.
@@ -29,6 +31,7 @@ export function serializeMessage(m) {
     createdAt: m.created_at,
     expiresAt: m.expires_at,
     burnAfterReadSeconds: m.burn_after_read_seconds ?? null,
+    editedAt: m.edited_at ?? null,
   };
 }
 
@@ -43,6 +46,7 @@ export function serializeGroupMessage(m) {
     createdAt: m.created_at,
     expiresAt: m.expires_at,
     burnAfterReadSeconds: m.burn_after_read_seconds ?? null,
+    editedAt: m.edited_at ?? null,
   };
 }
 

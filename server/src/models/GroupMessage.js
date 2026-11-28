@@ -17,10 +17,19 @@
 //           calls startDueBurns, which covers the case where the last unread
 //           member leaves the group. Expired messages are hidden immediately
 //           and physically removed by the sweeper.
+//           EDITING (editGroupMessage): one transaction that locks the message
+//           and allows the change only if the caller is the SENDER and still a
+//           member, neither the message nor the room has expired, the message
+//           is less than 15 minutes old (server clock), no burn timer has
+//           started, it was edited fewer than 10 times, and the new ciphertext
+//           uses the message's ORIGINAL key epoch (so recipients know which
+//           group key to decrypt it with). Every query is parameterised.
 // =============================================================================
-import { query } from '../config/db.js';
+import { query, withTransaction } from '../config/db.js';
 
-const COLS = 'id, group_id, from_id, epoch, ciphertext, iv, created_at, expires_at, burn_after_read_seconds';
+const COLS =
+  'id, group_id, from_id, epoch, ciphertext, iv, created_at, expires_at, burn_after_read_seconds, edited_at';
+const MAX_EDITS = 10;
 
 // Returns the stored message, or null when the sender may not post (not a member, stale epoch,
 // rekey pending, or the room has expired).
@@ -41,11 +50,44 @@ export async function createGroupMessage({ groupId, fromId, epoch, ciphertext, i
   return rows[0] || null;
 }
 
+// Returns { error } | { message }.
+export async function editGroupMessage({ messageId, userId, epoch, ciphertext, iv }) {
+  return withTransaction(async (c) => {
+    const m = await c.query(
+      `SELECT m.epoch, m.edit_count, m.burn_started_at,
+              (m.created_at > now() - interval '15 minutes') AS in_window
+       FROM group_messages m
+       JOIN group_members gm ON gm.group_id = m.group_id AND gm.user_id = $2
+       JOIN chat_groups g ON g.id = m.group_id
+       WHERE m.id = $1 AND m.from_id = $2
+         AND (m.expires_at IS NULL OR m.expires_at > now())
+         AND (g.expires_at IS NULL OR g.expires_at > now())
+       FOR UPDATE OF m`,
+      [messageId, userId]
+    );
+    if (!m.rowCount) return { error: 'not_found' };
+    const row = m.rows[0];
+    if (!row.in_window) return { error: 'too_late' };
+    if (row.burn_started_at) return { error: 'burning' };
+    if (row.edit_count >= MAX_EDITS) return { error: 'edit_limit' };
+    if (row.epoch !== epoch) return { error: 'epoch_mismatch' };
+
+    const up = await c.query(
+      `UPDATE group_messages
+       SET ciphertext = $2, iv = $3, edited_at = now(), edit_count = edit_count + 1
+       WHERE id = $1
+       RETURNING ${COLS}`,
+      [messageId, ciphertext, iv]
+    );
+    return { message: up.rows[0] };
+  });
+}
+
 // Newest first; "before" is an ISO timestamp for paging. Callers reverse for display.
 export async function listGroupMessages({ groupId, userId, limit, before }) {
   const { rows } = await query(
     `SELECT m.id, m.group_id, m.from_id, m.epoch, m.ciphertext, m.iv, m.created_at, m.expires_at,
-            m.burn_after_read_seconds
+            m.burn_after_read_seconds, m.edited_at
      FROM group_messages m
      JOIN group_members gm ON gm.group_id = m.group_id AND gm.user_id = $2
      WHERE m.group_id = $1

@@ -12,12 +12,23 @@
 //           here: only the sender can unsend a message; clearing a chat removes
 //           it for both people; only the recipient can start a burn timer, and
 //           only once (markBurn returns a row only on the first read, so
-//           callers notify exactly once). Every query is parameterised.
+//           callers notify exactly once).
+//           EDITING (editMessage): one transaction that locks the message row
+//           and allows the change only if ALL of these hold - the caller is the
+//           sender, the message has not expired, it was sent less than 15
+//           minutes ago by the SERVER's clock, no burn timer has started, and it
+//           has been edited fewer than 10 times. Block rules match normal
+//           sending: if the sender blocked the recipient the edit is refused
+//           ('unblock_first'); if the recipient blocked the sender the call
+//           reports a silent success and changes NOTHING, so a blocked sender
+//           learns nothing. The new ciphertext replaces the old one and
+//           edited_at is stamped. Every query is parameterised.
 // =============================================================================
-import { query } from '../config/db.js';
+import { query, withTransaction } from '../config/db.js';
 
-const COLS = 'id, from_id, to_id, ciphertext, iv, created_at, expires_at, burn_after_read_seconds';
+const COLS = 'id, from_id, to_id, ciphertext, iv, created_at, expires_at, burn_after_read_seconds, edited_at';
 const NOT_EXPIRED = '(expires_at IS NULL OR expires_at > now())';
+const MAX_EDITS = 10;
 
 export async function createMessage({ from, to, ciphertext, iv, ttlSeconds, burnSeconds }) {
   const { rows } = await query(
@@ -30,6 +41,42 @@ export async function createMessage({ from, to, ciphertext, iv, ttlSeconds, burn
     [from, to, ciphertext, iv, ttlSeconds ?? null, burnSeconds ?? null]
   );
   return rows[0];
+}
+
+// Returns { error } | { silent: true, peer } | { message, peer }.
+export async function editMessage({ id, userId, ciphertext, iv }) {
+  return withTransaction(async (c) => {
+    const m = await c.query(
+      `SELECT to_id, edit_count, burn_started_at,
+              (created_at > now() - interval '15 minutes') AS in_window
+       FROM messages
+       WHERE id = $1 AND from_id = $2 AND ${NOT_EXPIRED}
+       FOR UPDATE`,
+      [id, userId]
+    );
+    if (!m.rowCount) return { error: 'not_found' };
+    const row = m.rows[0];
+    if (!row.in_window) return { error: 'too_late' };
+    if (row.burn_started_at) return { error: 'burning' };
+    if (row.edit_count >= MAX_EDITS) return { error: 'edit_limit' };
+
+    const b = await c.query(
+      `SELECT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2) AS i_blocked,
+              EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $2 AND blocked_id = $1) AS blocked_me`,
+      [userId, row.to_id]
+    );
+    if (b.rows[0].i_blocked) return { error: 'unblock_first' };
+    if (b.rows[0].blocked_me) return { silent: true, peer: row.to_id };
+
+    const up = await c.query(
+      `UPDATE messages
+       SET ciphertext = $2, iv = $3, edited_at = now(), edit_count = edit_count + 1
+       WHERE id = $1
+       RETURNING ${COLS}`,
+      [id, ciphertext, iv]
+    );
+    return { message: up.rows[0], peer: row.to_id };
+  });
 }
 
 // Starts the burn timer of a message. Only the recipient can do it, only once.

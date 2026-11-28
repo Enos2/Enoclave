@@ -10,15 +10,17 @@
 //           POST /export { password }: re-confirms the passphrase, then returns
 //           everything the server holds about the user as a JSON download
 //           (Content-Disposition: attachment, Cache-Control: no-store; never
-//           includes password hashes; message contents stay ciphertext).
-//           Limited to 3 exports per hour per user. GET /security: a security
-//           checkup - a 0-100 score from objective checks (signed-in devices,
-//           recent failed logins, recent key changes, passphrase age, groups
-//           waiting for a new key) plus informational notes about what the
-//           privacy settings currently reveal. Passphrase checks are protected
-//           against guessing even from a stolen session: after 5 failures in 15
-//           minutes the user is answered 429 (Retry-After) whatever they send.
-//           Every body uses a strict zod schema. Session required.
+//           includes password hashes or two-factor secrets; message contents
+//           stay ciphertext). Limited to 3 exports per hour per user.
+//           GET /security: a security checkup - a 0-100 score from objective
+//           checks (signed-in devices, recent failed logins, recent key
+//           changes, passphrase age, groups waiting for a new key, whether
+//           two-factor authentication is on) plus informational notes about what
+//           the privacy settings currently reveal. Passphrase checks are
+//           protected against guessing even from a stolen session: after 5
+//           failures in 15 minutes the user is answered 429 (Retry-After)
+//           whatever they send. Every body uses a strict zod schema. Session
+//           required.
 // =============================================================================
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
@@ -95,7 +97,8 @@ router.post('/export', strictLimiter, exportLimiter, validate(exportSchema), asy
       exportedAt: new Date().toISOString(),
       notes:
         'Message contents are end-to-end encrypted: the server stores only ciphertext and cannot read it. ' +
-        'Messages and group messages are limited to the most recent 2000 of each. Your passphrase hash is never included.',
+        'Messages and group messages are limited to the most recent 2000 of each. Your passphrase hash and ' +
+        'two-factor secrets are never included.',
       ...data,
     };
     res.set({
@@ -114,6 +117,12 @@ router.get('/security', socialLimiter, async (req, res, next) => {
     const [f, s] = await Promise.all([checkupFacts(req.user.id), getSettings(req.user.id)]);
     const checks = [];
     const add = (id, status, penalty, title, detail) => checks.push({ id, status, penalty, title, detail });
+
+    if (f.two_factor_enabled) {
+      add('two_factor', 'ok', 0, 'Two-factor authentication', 'Two-factor authentication is on.');
+    } else {
+      add('two_factor', 'warn', 15, 'Two-factor authentication is off', 'Turn it on so a stolen passphrase is not enough to sign in.');
+    }
 
     if (f.active_sessions > 5) {
       add('sessions', 'warn', 10, 'Many signed-in devices', `${f.active_sessions} devices are signed in. Sign out the ones you do not use.`);

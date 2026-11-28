@@ -13,15 +13,17 @@
 //           hash or the passphrase).
 //           SCHEDULED MESSAGES: time-range and recipient validation, blocked
 //           recipients, listing WITHOUT ciphertext, cancelling (only by the
-//           sender), delivery at the right time (not before, then to the
-//           recipient with its burn setting intact, with a delivered
-//           notification for the sender), silent drop when the recipient has
-//           blocked the sender, and the queue emptying afterwards.
+//           sender), delivery (never before the scheduled time, judged by the
+//           server's own timestamps so slow networks cannot break the test;
+//           the recipient gets it with its burn setting intact and the sender
+//           gets a delivered notification), silent drop when the recipient has
+//           blocked the sender, and the queue draining completely afterwards.
 //           CHAT PREFERENCES: defaults, pin/archive/mute/default-timer,
 //           validation, the 5-pin limit, group membership checks, live sync to
 //           the user's devices, and reset-to-default removing the row.
-//           Takes about 35 seconds (it waits for a real delivery timer). Needs
-//           the server running with TEST_MODE=1:  node .\tests\day6.mjs
+//           Takes up to about 90 seconds on a slow database connection (it
+//           waits for real delivery timers). Needs the server running with
+//           TEST_MODE=1:  node .\tests\day6.mjs
 // =============================================================================
 import crypto from 'node:crypto';
 import { io } from 'socket.io-client';
@@ -189,17 +191,26 @@ console.log('\n-- Scheduled messages --');
   check('the sender cancels one (200)', (await http(ann, 'DELETE', `/scheduled/${s3.json.scheduled.id}`)).status, 200);
   check('cancelling twice gives 404', (await http(ann, 'DELETE', `/scheduled/${s3.json.scheduled.id}`)).status, 404);
 
-  check('nothing is delivered before the time', await waitEvent(bobS, 'message:new', { from: mkBob, ms: 1500 }), null);
-  const delivered = await waitEvent(bobS, 'message:new', { from: mkBob, ms: 25000 });
-  check('the recipient receives the message at the scheduled time', delivered?.from, ann.id);
+  const delivered = await waitEvent(bobS, 'message:new', { from: mkBob, ms: 60000 });
+  check('the recipient receives the message', delivered?.from, ann.id);
+  check(
+    'it was not delivered before its scheduled time (server timestamps)',
+    Date.parse(delivered?.createdAt) >= Date.parse(s1.json.scheduled.deliverAt),
+    true
+  );
   check('the burn setting survives delivery', delivered?.burnAfterReadSeconds, 30);
   const note = await waitEvent(annS, 'scheduled:delivered', { from: mkAnn });
   check('the sender is told it was delivered', note?.id, s1.json.scheduled.id);
   check('the message is in the recipient history', (await http(bob, 'GET', `/messages/${ann.id}`)).json.messages.some((m) => m.id === delivered?.id), true);
 
-  check('a recipient who blocked the sender receives nothing', await waitEvent(danS, 'message:new', { from: mkDan, ms: 1500 }), null);
+  let left = 1;
+  for (let i = 0; i < 40 && left > 0; i += 1) {
+    left = (await http(ann, 'GET', '/scheduled')).json.scheduled.length;
+    if (left > 0) await sleep(1500);
+  }
+  check('the queue is empty afterwards', left, 0);
+  check('a recipient who blocked the sender receives nothing', danS.log.slice(mkDan).some((x) => x.e === 'message:new'), false);
   check('the blocked sender gets no failure event', annS.log.slice(mkAnn).some((x) => x.e === 'scheduled:failed'), false);
-  check('the queue is empty afterwards', (await http(ann, 'GET', '/scheduled')).json.scheduled.length, 0);
 }
 
 console.log('\n-- Chat preferences --');
