@@ -2,26 +2,41 @@
 // Project : Enoclave - private, end-to-end encrypted web chat
 // File    : server/tests/run-all.mjs
 // Purpose : Runs every automated test suite one after another and prints a
-//           final summary. Suites: day3b (burn-on-read and self-destruct
-//           rooms, about 50 s), day4 (settings, presence, typing, read
-//           receipts, encrypted files, about 45 s) and day5 (hardening, reports
-//           and moderation, about 15 s). Each suite is a separate process whose
-//           output is shown live; the runner exits with code 1 if any suite
-//           failed, so it can also gate a CI pipeline. The server must be
-//           running, started with TEST_MODE=1 so that rate limits do not stop
-//           repeated runs (PowerShell: $env:TEST_MODE='1'; npm run dev).
-//           Run it with:  npm test
+//           final summary. Suites are DISCOVERED automatically: any file in the
+//           tests folder named day<number>[letter].mjs (day3b.mjs, day4.mjs,
+//           day5.mjs, day6.mjs ...) is run in alphabetical order, so adding a
+//           new suite never requires editing this file. Each suite is a
+//           separate process whose output is shown live; the runner exits with
+//           code 1 if any suite failed, so it can also gate a CI pipeline.
+//           The server must be running in ANOTHER terminal, started with
+//           TEST_MODE=1 so rate limits do not stop repeated runs (PowerShell:
+//           $env:TEST_MODE='1'; npm run dev). Run it with:  npm test
 //           The PowerShell suite day3a.ps1 (invite links) is separate:
 //           powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\day3a.ps1
+//           If the server is not reachable the runner says so immediately
+//           instead of letting every suite crash with a network error.
 // =============================================================================
 import { spawn } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const suites = ['day3b.mjs', 'day4.mjs', 'day5.mjs'];
-const results = [];
+const suites = readdirSync(dir)
+  .filter((f) => /^day\d+[a-z]?\.mjs$/.test(f))
+  .sort();
 
+try {
+  const res = await fetch('http://localhost:5000/api/ready');
+  if (!res.ok) throw new Error(`status ${res.status}`);
+} catch {
+  console.error('\nThe server is not reachable on http://localhost:5000.');
+  console.error('Start it in ANOTHER terminal first:');
+  console.error("  cd server; $env:TEST_MODE = '1'; npm run dev\n");
+  process.exit(1);
+}
+
+const results = [];
 for (const suite of suites) {
   console.log(`\n=================== ${suite} ===================`);
   const code = await new Promise((resolve) => {
