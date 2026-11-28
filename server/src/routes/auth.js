@@ -1,5 +1,22 @@
-// File: server/src/routes/auth.js
-// Purpose: Register, login (with lockout), logout, logout-everywhere and current-session endpoints.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/routes/auth.js
+// Purpose : HTTP API under /api/auth for accounts and sessions. POST /register
+//           creates an account (username, passphrase, and the PUBLIC half of
+//           the user's encryption key; the private key never leaves the
+//           device) and starts a session. POST /login checks the passphrase
+//           with bcrypt in constant time (unknown usernames cost the same time
+//           as wrong passwords, and both give the same generic error), applies
+//           the brute-force lockout (5 failures per username+network or 25 per
+//           username in 15 minutes -> 429 with Retry-After), and refuses
+//           suspended accounts with 403. GET /me returns the current user
+//           (including isAdmin). POST /logout revokes only the current session
+//           and always clears the cookie. POST /logout-all revokes every
+//           session and invalidates all existing tokens. Sessions are capped
+//           at 10 per user (the oldest is evicted and its sockets cut). Every
+//           security-relevant event is written to the audit log, which stores
+//           a keyed hash of the network address, never the address itself.
+// =============================================================================
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -67,6 +84,12 @@ router.post('/login', strictLimiter, validate(loginSchema), async (req, res, nex
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    if (user.suspended) {
+      await logEvent({ userId: user.id, username, event: 'login_blocked_suspended', ...info });
+      const until = user.suspended_until instanceof Date ? user.suspended_until.toISOString() : null;
+      return res.status(403).json({ error: 'Account suspended', permanent: until === null, until });
+    }
+
     await startSession(req, res, user, info);
     await logEvent({ userId: user.id, username, event: 'login_success', ...info });
     res.json({ user: publicUser(user) });
@@ -76,7 +99,7 @@ router.post('/login', strictLimiter, validate(loginSchema), async (req, res, nex
 });
 
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user) });
+  res.json({ user: { ...publicUser(req.user), isAdmin: Boolean(req.user.is_admin) } });
 });
 
 // Revokes only the current session; always clears the cookie, even if the token is already invalid.

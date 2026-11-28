@@ -1,5 +1,16 @@
-// File: server/src/models/AuthEvent.js
-// Purpose: Security audit log and brute-force lockout lookups. Never stores raw IP addresses.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/models/AuthEvent.js
+// Purpose : The security audit log and brute-force lockout. logEvent records
+//           register, login success/failure, logout, key rotation and
+//           similar events with a keyed network hash and a device label
+//           (never a raw IP); it swallows its own errors so a logging
+//           problem can never break login. lockoutSeconds counts recent
+//           failures per username+network (limit 5) and per username overall
+//           (limit 25) over a 15-minute window and returns how many seconds
+//           remain until the limit lifts, which the login route returns as
+//           Retry-After. recentEvents feeds the account security timeline.
+// =============================================================================
 import { query } from '../config/db.js';
 
 const IP_LIMIT = 5; // failed logins per username + network in the window

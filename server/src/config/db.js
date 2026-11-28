@@ -2,17 +2,22 @@
 // Project : Enoclave - private, end-to-end encrypted web chat
 // File    : server/src/config/db.js
 // Purpose : Owns the single PostgreSQL (Neon) connection pool used by the whole
-//           server. Exposes query() for one-off statements and
-//           withTransaction() for multi-statement operations that must
-//           succeed or fail together (group changes, account deletion).
-//           Also runs the background sweeper, once a minute: it deletes
-//           expired disappearing messages (direct and group), dead and
-//           revoked login sessions, and audit-log rows older than 90 days.
-//           The pool error handler is required: Neon drops idle connections,
-//           and an unhandled pool error would otherwise crash the process.
+//           server. query() runs one statement (and logs any query slower than
+//           750 ms, with the SQL text trimmed and NEVER the parameters, so no
+//           user data reaches logs); withTransaction() runs several statements
+//           that must succeed or fail together; checkDb() is the readiness
+//           probe (answers within 3 seconds or fails); closePool() is used by
+//           graceful shutdown. The pool has a client-side query timeout of 25 s
+//           so a hung connection cannot hold a request forever, and an error
+//           handler: Neon drops idle connections and an unhandled pool error
+//           would crash the process. startExpirySweeper() runs every minute:
+//           it deletes expired disappearing messages (direct and group), dead
+//           and revoked login sessions, and audit-log rows older than 90 days.
+//           This file is final.
 // =============================================================================
 import pg from 'pg';
 import { env } from './env.js';
+import { logger } from '../utils/logger.js';
 
 const { Pool } = pg;
 
@@ -21,11 +26,20 @@ export const pool = new Pool({
   max: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 15_000, // Neon may need a few seconds to wake a suspended compute
+  query_timeout: 25_000,
 });
 
-pool.on('error', (err) => console.error('[db] idle client error:', err.message));
+pool.on('error', (err) => logger.error('idle database client error', { err }));
 
-export const query = (text, params) => pool.query(text, params);
+export async function query(text, params) {
+  const started = Date.now();
+  try {
+    return await pool.query(text, params);
+  } finally {
+    const ms = Date.now() - started;
+    if (ms > 750) logger.warn('slow query', { ms, sql: text.replace(/\s+/g, ' ').trim().slice(0, 120) });
+  }
+}
 
 export async function withTransaction(fn) {
   const client = await pool.connect();
@@ -48,8 +62,17 @@ export async function withTransaction(fn) {
 
 export async function connectDB() {
   await pool.query('SELECT 1');
-  console.log('[db] connected');
+  logger.info('database connected');
 }
+
+export async function checkDb() {
+  await Promise.race([
+    pool.query('SELECT 1'),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('database check timed out')), 3000).unref()),
+  ]);
+}
+
+export const closePool = () => pool.end();
 
 export function startExpirySweeper() {
   const run = async () => {
@@ -63,7 +86,7 @@ export function startExpirySweeper() {
       );
       await pool.query("DELETE FROM auth_events WHERE created_at < now() - interval '90 days'");
     } catch (err) {
-      console.error('[db] sweep failed:', err.message);
+      logger.error('expiry sweep failed', { err });
     }
   };
   run();

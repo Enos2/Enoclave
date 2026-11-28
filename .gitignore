@@ -11,3 +11,6 @@ dist/
 # End of file
 # Encrypted uploads (runtime data)
 server/storage/
+
+# Production secrets (the example file stays tracked)
+!.env.production.example

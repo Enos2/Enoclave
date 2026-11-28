@@ -1,5 +1,15 @@
-// File: server/src/routes/sessions.js
-// Purpose: List active devices, revoke one or all other sessions, and view the account's security events.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/routes/sessions.js
+// Purpose : HTTP API under /api/sessions for managing logged-in devices and
+//           reviewing account security. GET / lists active sessions and
+//           marks the current one; GET /events returns the last 50 security
+//           events (logins, logouts, key changes); DELETE /:id revokes one
+//           session (and logs this browser out if it is the current one);
+//           DELETE / revokes every OTHER session. Revoking disconnects that
+//           device's live sockets immediately. Session required; rate
+//           limited; ids validated as UUIDs.
+// =============================================================================
 import { Router } from 'express';
 import { listSessions, revokeSession, revokeOthers } from '../models/Session.js';
 import { logEvent, recentEvents } from '../models/AuthEvent.js';

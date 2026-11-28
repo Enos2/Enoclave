@@ -1,5 +1,15 @@
-// File: server/src/routes/messages.js
-// Purpose: Conversation list, encrypted history, unsend one message and clear a whole chat.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/routes/messages.js
+// Purpose : HTTP API under /api/messages for 1-to-1 chats. GET / lists
+//           conversations; GET /:userId returns up to 100 messages of one
+//           conversation (ciphertext only; expired and burned messages are
+//           excluded); DELETE /item/:id lets the SENDER unsend one message
+//           for both people; DELETE /:userId clears a whole conversation for
+//           BOTH people. Sending is done over the realtime socket
+//           (socket/handlers/messages.js), not here. Realtime events keep
+//           every device in sync. Session required; ids validated as UUIDs.
+// =============================================================================
 import { Router } from 'express';
 import { listConversations, getHistory, deleteOwnMessage, clearChat } from '../models/Message.js';
 import { requireAuth } from '../middleware/auth.js';

@@ -1,0 +1,38 @@
+# =============================================================================
+# Project : Enoclave - private, end-to-end encrypted web chat
+# File    : docker-compose.yml
+# Purpose : Runs the API in production with one command:
+#             docker compose up -d --build
+#           The database is Neon (external), so only the API runs here. The
+#           container is locked down: read-only root filesystem (writes only
+#           to the /app/storage volume and a RAM /tmp), all Linux capabilities
+#           dropped, no privilege escalation, restart on failure, and the port
+#           is bound to 127.0.0.1 so ONLY a reverse proxy on the same machine
+#           (Caddy or nginx, see docs/DEPLOY.md) can reach it. Configuration
+#           comes from server/.env.production (copy the example and fill it in).
+#           Encrypted uploads persist in the named volume enoclave_storage.
+# =============================================================================
+services:
+  api:
+    build:
+      context: ./server
+    image: enoclave-api:latest
+    env_file: ./server/.env.production
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - enoclave_storage:/app/storage
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  enoclave_storage:
+
+# File: docker-compose.yml
+# End of file

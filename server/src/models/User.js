@@ -4,18 +4,25 @@
 // Purpose : Data-access layer for user accounts. Every query is parameterised
 //           ($1, $2 ...), so user input can never change the meaning of a SQL
 //           statement. Handles create/find/search, public-key rotation and
-//           account deletion. Two behaviours worth knowing:
-//           (1) Rotating a public key flags every group the user belongs to
-//               as needs_rekey, because the old wrapped group keys were
-//               encrypted to the old key and the new device cannot open them.
+//           account deletion. Every user row read here carries is_admin and a
+//           computed "suspended" flag (suspended_until in the future, or
+//           'infinity' for permanent) so authentication can reject suspended
+//           accounts without extra queries. Two behaviours worth knowing:
+//           (1) Rotating a public key flags every group the user belongs to as
+//               needs_rekey, because the old wrapped group keys were encrypted
+//               to the old key and the new device cannot open them.
 //           (2) Deleting an account first removes the user from all groups
 //               (promoting an admin or deleting the group if needed), then
-//               deletes the user; the database cascades the rest.
+//               deletes the user; the database cascades the rest (reports and
+//               moderation records keep a name snapshot with the ids removed).
+//           Search hides users who have blocked the searcher. This file is final.
 // =============================================================================
 import { query, withTransaction } from '../config/db.js';
 import { leaveAllGroups } from './Group.js';
 
-const COLS = 'id, username, public_key, token_version';
+const COLS =
+  'id, username, public_key, token_version, is_admin, ' +
+  '(suspended_until IS NOT NULL AND suspended_until > now()) AS suspended, suspended_until';
 
 export async function createUser({ username, passwordHash, publicKey }) {
   const { rows } = await query(
@@ -48,7 +55,6 @@ export async function userExists(id) {
 }
 
 // The prefix is already restricted to [a-z0-9_]; "_" is escaped because it is a LIKE wildcard.
-// Users who have blocked the searcher are hidden from the results.
 export async function searchUsers(prefix, searcherId) {
   const pattern = `${prefix.replace(/_/g, '\\_')}%`;
   const { rows } = await query(

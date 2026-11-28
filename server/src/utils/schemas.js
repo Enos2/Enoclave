@@ -1,5 +1,15 @@
-// File: server/src/utils/schemas.js
-// Purpose: Shared zod validation schemas for usernames, passwords and public keys.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/utils/schemas.js
+// Purpose : Shared zod schemas for the data every account route accepts.
+//           usernameSchema: 3-24 characters, lowercase letters, digits and
+//           underscore, trimmed and lowercased. passwordSchema: 10-72
+//           characters (72 is the most bcrypt can use). publicKeySchema: a
+//           strict EC P-256 public JWK - kty, crv and two 43-character
+//           base64url coordinates, nothing else. Keeping them in one place
+//           guarantees registration, login and key rotation apply identical
+//           rules.
+// =============================================================================
 import { z } from 'zod';
 
 export const usernameSchema = z

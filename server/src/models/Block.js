@@ -1,5 +1,15 @@
-// File: server/src/models/Block.js
-// Purpose: Data access for blocking. Blocking also removes the target from the blocker's contacts.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/models/Block.js
+// Purpose : Data-access layer for blocking. blockUser adds a block (capped
+//           at 500 per user, under an advisory lock) and, in the same
+//           transaction, removes the target from the blocker's contacts;
+//           unblockUser reverses it; listBlocks returns a user's blocks.
+//           getBlockState tells the message handlers whether I blocked
+//           someone or they blocked me. A blocked user's messages are
+//           silently dropped while the sender still sees success, so nobody
+//           can learn they were blocked. Every query is parameterised.
+// =============================================================================
 import { query, withTransaction } from '../config/db.js';
 
 const MAX_BLOCKS = 500;

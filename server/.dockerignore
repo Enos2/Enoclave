@@ -1,0 +1,22 @@
+# =============================================================================
+# Project : Enoclave - private, end-to-end encrypted web chat
+# File    : server/.dockerignore
+# Purpose : Keeps secrets and junk out of the Docker build context: local
+#           environment files (so a real .env can never be copied into an
+#           image), installed packages (rebuilt inside the image), uploaded
+#           user files, tests, and version-control data. A smaller context also
+#           makes builds faster.
+# =============================================================================
+node_modules
+.env
+.env.*
+!.env.production.example
+storage
+tests
+.git
+*.log
+Dockerfile
+.dockerignore
+
+# File: server/.dockerignore
+# End of file

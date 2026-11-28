@@ -1,5 +1,15 @@
-// File: server/src/models/Contact.js
-// Purpose: Data access for the contact list, with a per-user cap enforced under an advisory lock.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/models/Contact.js
+// Purpose : Data-access layer for each user's contact list. listContacts
+//           returns a user's contacts; addContact runs in a transaction
+//           under a per-user advisory lock, so parallel requests cannot
+//           exceed the 500-contact cap, and refuses to add someone you have
+//           blocked; removeContact deletes one. Contacts are one-directional
+//           records; presence is shown only between MUTUAL contacts (both
+//           added each other), which models/Presence.js enforces. Every
+//           query is parameterised.
+// =============================================================================
 import { query, withTransaction } from '../config/db.js';
 
 const MAX_CONTACTS = 500;

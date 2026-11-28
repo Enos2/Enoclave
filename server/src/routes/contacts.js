@@ -1,5 +1,14 @@
-// File: server/src/routes/contacts.js
-// Purpose: List, add and remove contacts.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/routes/contacts.js
+// Purpose : HTTP API under /api/contacts. GET / lists the logged-in user's
+//           contacts, POST / adds one ({ userId }; you cannot add yourself,
+//           someone you blocked, or exceed 500 contacts), DELETE /:id
+//           removes one. Adding a contact is private: the other person is
+//           not told, and presence is visible only when both people added
+//           each other. The body is validated with a strict zod schema; ids
+//           are UUIDs; session required and rate limited.
+// =============================================================================
 import { Router } from 'express';
 import { z } from 'zod';
 import { listContacts, addContact, removeContact } from '../models/Contact.js';

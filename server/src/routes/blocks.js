@@ -1,5 +1,14 @@
-// File: server/src/routes/blocks.js
-// Purpose: List, add and remove blocked users.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/routes/blocks.js
+// Purpose : HTTP API under /api/blocks. GET / lists blocked users, POST /
+//           blocks one ({ userId }; this also removes them from your
+//           contacts), DELETE /:id unblocks. Blocked users cannot message
+//           you, cannot see your presence, typing or read receipts, and do
+//           not find you in search - and they are never told. The body is
+//           validated with a strict zod schema; ids are UUIDs; session
+//           required and rate limited.
+// =============================================================================
 import { Router } from 'express';
 import { z } from 'zod';
 import { listBlocks, blockUser, unblockUser } from '../models/Block.js';

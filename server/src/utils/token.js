@@ -1,5 +1,16 @@
-// File: server/src/utils/token.js
-// Purpose: Create/verify session-bound JWTs and manage the httpOnly auth cookie.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/utils/token.js
+// Purpose : Creates and verifies the session-bound login token (a JWT signed
+//           with HS256 only, so algorithm-confusion attacks are impossible)
+//           and manages the cookie that carries it. The token holds the user
+//           id, the user token_version (bumping it invalidates every old
+//           token at once) and the session id (revoking that one session
+//           invalidates just this device). The cookie is httpOnly
+//           (JavaScript cannot read it), SameSite=Strict (never sent on
+//           cross-site requests) and Secure in production; sessions last 12
+//           hours.
+// =============================================================================
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 

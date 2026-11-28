@@ -1,5 +1,16 @@
-// File: server/src/models/Session.js
-// Purpose: Data access for login sessions (devices): create, validate, list and revoke.
+// =============================================================================
+// Project : Enoclave - private, end-to-end encrypted web chat
+// File    : server/src/models/Session.js
+// Purpose : Data-access layer for login sessions, which are what the
+//           "devices" list shows. createSession adds a session and evicts
+//           the oldest ones beyond 10 per user (returning the evicted ids so
+//           their sockets can be cut). findActiveSession confirms a session
+//           is neither revoked nor expired. touchSession updates last-seen
+//           at most once a minute to avoid a database write on every
+//           request. listSessions, revokeSession, revokeOthers and revokeAll
+//           back the session-management endpoints. Every query is
+//           parameterised and scoped to the owning user.
+// =============================================================================
 import { query } from '../config/db.js';
 import { SESSION_TTL_MS } from '../utils/token.js';
 
